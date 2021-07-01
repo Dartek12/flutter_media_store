@@ -1,6 +1,13 @@
+import 'dart:io';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'package:flutter_media_store/media_store.dart';
+import 'package:path_provider/path_provider.dart' as path_provider;
+import 'package:path/path.dart' as path;
+import 'package:uuid/uuid.dart';
 
 class DrawingPage extends StatefulWidget {
   const DrawingPage({Key? key}) : super(key: key);
@@ -28,7 +35,13 @@ class _DrawingCanvas extends StatefulWidget {
 }
 
 class __DrawingCanvasState extends State<_DrawingCanvas> {
+  GlobalKey _containerKey = GlobalKey();
   Color _color = Colors.black;
+  final Paint _paint = Paint()
+    ..isAntiAlias = true
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeWidth = 10.0;
   List<_ColoredPath> _paths = [];
   _ColoredPath? _currentPath;
 
@@ -58,15 +71,21 @@ class __DrawingCanvasState extends State<_DrawingCanvas> {
                   });
                 },
                 child: Text('Clear'),
-              )
+              ),
+              const SizedBox(
+                width: 8,
+              ),
+              OutlinedButton(onPressed: _saveImage, child: Icon(Icons.save)),
             ],
           ),
         ),
         Expanded(
           child: Container(
+            color: Colors.white,
+            key: _containerKey,
             child: CustomPaint(
               isComplex: true,
-              foregroundPainter: _Drawer(_paths),
+              foregroundPainter: _Drawer(_paths, _paint),
               child: GestureDetector(
                 onPanDown: (details) {
                   final newPath =
@@ -95,6 +114,37 @@ class __DrawingCanvasState extends State<_DrawingCanvas> {
     );
   }
 
+  void _saveImage() async {
+    File tempFile = await _saveCanvasToTemporaryFile();
+    await _saveFileToMediaStore(tempFile);
+    await tempFile.delete();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('File saved!')));
+  }
+
+  Future<File> _saveCanvasToTemporaryFile() async {
+    final recorder = PictureRecorder();
+    final RenderBox box = _containerKey.currentContext!.findRenderObject() as RenderBox;
+    final size = box.size;
+    final rect = Rect.fromLTRB(0, 0, size.width, size.height);
+    final canvas = Canvas(recorder, rect);
+    canvas.drawRect(rect, Paint()..color = Colors.white);
+    _drawOnCanvas(canvas, size: size, paint: _paint, paths: _paths);
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size.width.toInt(), size.height.toInt());
+    final bytes = await image.toByteData(format: ImageByteFormat.png);
+
+    final identifier = Uuid().v4();
+    final fileName = '$identifier.png';
+    final directory = await path_provider.getTemporaryDirectory();
+    final filePath = path.join(directory.path, fileName);
+    return await File(filePath).writeAsBytes(bytes!.buffer.asUint8List());
+  }
+
+  Future<void> _saveFileToMediaStore(File file) async {
+    final mediaStore = MediaStore();
+    await mediaStore.addItem(file: file, name: 'Drawing.png');
+  }
+
   void _pickColor() async {
     await showDialog(
         context: context,
@@ -121,20 +171,13 @@ class __DrawingCanvasState extends State<_DrawingCanvas> {
 
 class _Drawer extends CustomPainter {
   final List<_ColoredPath> _paths;
-  final Paint _paint = Paint()
-    ..isAntiAlias = true
-    ..style = PaintingStyle.stroke
-    ..strokeCap = StrokeCap.round
-    ..strokeWidth = 10.0;
+  final Paint _paint;
 
-  _Drawer(this._paths);
+  _Drawer(this._paths, this._paint);
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (final path in _paths) {
-      _paint.color = path.color;
-      canvas.drawPath(path.path, _paint);
-    }
+    _drawOnCanvas(canvas, size: size, paint: _paint, paths: _paths);
   }
 
   @override
@@ -146,4 +189,11 @@ class _ColoredPath {
   final Path path;
 
   const _ColoredPath(this.color, this.path);
+}
+
+void _drawOnCanvas(Canvas canvas, {required Size size, required Paint paint, required List<_ColoredPath> paths}) {
+  for (final path in paths) {
+    paint.color = path.color;
+    canvas.drawPath(path.path, paint);
+  }
 }
